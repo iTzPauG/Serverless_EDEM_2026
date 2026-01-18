@@ -17,7 +17,7 @@ steps:
     id: Run Dataflow Flex Template
     args: ['dataflow', 'flex-template', 'run', '$_DATAFLOW_JOB_NAME',
            '--template-file-gcs-location=gs://$_DATAFLOW_BASE_BUCKET/$_DATAFLOW_TEMPLATE_NAME.json',
-           '--parameters=project_id=$PROJECT_ID,playback_pubsub_topic=$_PLAYBACK_PUBSUB_TOPIC,engagement_pubsub_topic=$_ENGAGEMENT_PUBSUB_TOPIC,quality_pubsub_topic=$_QUALITY_PUBSUB_TOPIC,notifications_pubsub_topic=$_NOTIFICATIONS_PUBSUB_TOPIC,firestore_collection=$_FIRESTORE_COLLECTION_NAME,bigquery_dataset=$_BIGQUERY_DATASET,bigquery_table=$_BIGQUERY_TABLE',
+           '--parameters=project_id=$PROJECT_ID,playback_pubsub_topic=$_PLAYBACK_PUBSUB_TOPIC,engagement_pubsub_topic=$_ENGAGEMENT_PUBSUB_TOPIC,quality_pubsub_topic=$_QUALITY_PUBSUB_TOPIC,notifications_pubsub_topic=$_NOTIFICATIONS_PUBSUB_TOPIC,firestore_collection=$_FIRESTORE_COLLECTION_NAME,bigquery_dataset=$_BIGQUERY_DATASET,user_bigquery_table=$_USER_BIGQUERY_TABLE,episode_bigquery_table=$_EPISODE_BIGQUERY_TABLE',
            '--region=$_REGION_ID',
            '--max-workers=1'
     ]
@@ -39,4 +39,5 @@ substitutions:
   _NOTIFICATIONS_PUBSUB_TOPIC: <YOUR_NOTIFICATIONS_PUBSUB_TOPIC>
   _FIRESTORE_COLLECTION_NAME: <YOUR_FIRESTORE_COLLECTION_NAME>
   _BIGQUERY_DATASET: <YOUR_BIGQUERY_DATASET>
-  _BIGQUERY_TABLE: <YOUR_BIGQUERY_TABLE>
+  _USER_BIGQUERY_TABLE: <YOUR_USER_BIGQUERY_TABLE>
+  _EPISODE_BIGQUERY_TABLE: <YOUR_EPISODE_BIGQUERY_TABLE>
