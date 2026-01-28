@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from google.cloud import pubsub_v1
 from google.cloud import firestore
 import argparse
-import requests
 import logging
 import random
 import json
