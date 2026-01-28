@@ -217,19 +217,35 @@ def run():
 
         processed_audio_files = (
             audio_files
-                | "ReadAudioFiles" >> #ToDo
-                | "TranscribeAudio" >> #ToDo
-                | "ExtractTranscription" >> #ToDo
-                | "ClassifyTopic" >> #ToDo
-                | "MapLabelMapping" >> #ToDo
-                | "GetMetadataFromFile" >> #ToDo
+                | "ReadAudioFiles" >> beam.Map(read_audio_files)
+                | "TranscribeAudio" >> RunInference(audio_model_handler)
+                | "ExtractTranscription" >> beam.Map(extract_text_from_prediction)
+                | "ClassifyTopic" >> RunInference(KeyedModelHandler(topic_model_handler))
+                | "MapLabelMapping" >> beam.Map(label_mapping)
+                | "GetMetadataFromFile" >> beam.ParDo(GetMetadataFromFileDoFn(args.project_id))
         )
-
-        processed_audio_files | "WriteToFirestore" >> #ToDo
-        
+        processed_audio_files | "WriteToFirestore" >> beam.ParDo(FormatFirestoreDocument(args.firestore_collection, args.project_id))
         (
-            processed_audio_files |
-            "WriteToBigQuery" >> #ToDo
+        (
+            processed_audio_files
+            | "WriteToBigQuery" >> beam.io.WriteToBigQuery(
+                table=f"{args.project_id}:{args.bigquery_dataset}.{args.bigquery_table}",
+                schema={
+                    "fields": [
+                        {"name": "transcription", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "label", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "title", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "show_id", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "episode_id", "type": "STRING", "mode": "REQUIRED"},
+                        {"name": "duration", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "status", "type": "STRING", "mode": "NULLABLE"},
+                    ]
+                },
+                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                method=beam.io.WriteToBigQuery.Method.FILE_LOADS
+            )
+        )
         )
 
 if __name__ == '__main__':

@@ -85,21 +85,41 @@ class FormatFirestoreDocument(beam.DoFn):
         self.project_id = project_id
 
     def setup(self):
-        #ToDo
+        from google.cloud import firestore
+        self.db = firestore.Client(project=self.project_id)
+
 
     def process(self, element):
-
-        #ToDo
+        doc_ref = self.db.collection(self.firestore_collection).document(element['episode_id'])
+        # Only update the 'path' and 'is_sensitive' fields
+        update_fields = {k: v for k, v in element.items() if k in ('path', 'is_sensitive')}
+        doc_ref.update(update_fields)
 
         logging.info(f"Document written to Firestore: {doc_ref.id}")
 
 class GetMetadataFromFileDoFn(beam.DoFn):
 
+    def __init__(self,project_id):
+        self.project_id = project_id
+
     def setup(self):
-        #ToDo
+        from google.cloud import storage
+        self.client = storage.Client(project=self.project_id)
 
     def process(self, element):
-        #ToDo
+        from urllib.parse import urlparse
+
+        parsed = urlparse(element['path'])
+        bucket = parsed.netloc
+        blob_name = parsed.path.lstrip("/")
+
+        blob = self.client.bucket(bucket).get_blob(blob_name)
+
+        yield {
+            "is_sensitive": element['is_sensitive'],
+            "path": element['path'],
+            "episode_id": blob.metadata.get("episode_id")
+        }
 
 """ Code: Dataflow Process """
 
@@ -152,16 +172,28 @@ def run():
 
         processed_image_data = (
             image_files
-                | "ReadImageFiles" >> #ToDo
-                | "SafeSearchDetection" >> #ToDo
-                | "GetMetadataFromFile" >> #ToDo
+                | "ReadImageFiles" >> beam.Map(read_image_bytes)
+                | "SafeSearchDetection" >> beam.ParDo(VisionSafeSearchDoFn())
+                | "GetMetadataFromFile" >> beam.ParDo(GetMetadataFromFileDoFn(args.project_id))
         )
 
-        processed_image_data | "WriteToFirestore" >> #ToDo
+        processed_image_data | "WriteToFirestore" >> beam.ParDo(FormatFirestoreDocument(args.firestore_collection, args.project_id))
         
         (
             processed_image_data |
-            "WriteToBigQuery" >> #ToDo
+            "WriteToBigQuery" >> beam.io.WriteToBigQuery(
+                table=f"{args.project_id}:{args.bigquery_dataset}.{args.bigquery_table}",
+                schema={
+                    "fields": [
+                        {"name": "episode_id", "type": "STRING", "mode": "REQUIRED"},
+                        {"name": "path", "type": "STRING", "mode": "NULLABLE"},
+                        {"name": "is_sensitive", "type": "STRING", "mode": "NULLABLE"},
+                    ]
+                },
+                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                method=beam.io.WriteToBigQuery.Method.FILE_LOADS
+            )
         )
 
 if __name__ == '__main__':
