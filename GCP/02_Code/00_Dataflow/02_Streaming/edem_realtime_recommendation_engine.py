@@ -1,9 +1,15 @@
-
 """ 
 Script: Dataflow Streaming Pipeline
 
 Description:
-
+This script implements a Dataflow streaming pipeline using Apache Beam to process real-time podcast user interaction events. The pipeline performs the following steps:
+1. Ingests playback, engagement, and quality events from Pub/Sub subscriptions.
+2. Normalizes and merges the events into a unified format.
+3. Computes real-time user metrics using session-based windows.
+4. Computes real-time content metrics using sliding windows.
+5. Stores user and content metrics in BigQuery.
+6. Generates notifications based on user behavior and content trends, storing them in Firestore and publishing them to Pub/Sub.
+ 
 EDEM. Master Big Data & Cloud 2025/2026
 Professor: Javi Briones & Adriana Campos
 """
@@ -12,12 +18,14 @@ Professor: Javi Briones & Adriana Campos
 
 # A. Apache Beam Libraries
 import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
 from apache_beam.transforms.window import Sessions, SlidingWindows
-from apache_beam.io.filesystems import FileSystems
 from apache_beam.utils.timestamp import Timestamp
 
-# B. Python Libraries
+# B. Google Cloud Libraries
+from google.cloud import firestore
+
+# C. Python Libraries
 import argparse
 import logging
 import uuid
@@ -35,7 +43,10 @@ def parsePubSubMessage(message):
         dict: Parsed message as a dictionary.
     """
 
-    #ToDo
+    message_str = message.decode('utf-8')
+    message_dict = json.loads(message_str)
+
+    logging.info(f"Parsed message: {message_dict}")
 
     return message_dict
 
@@ -226,10 +237,12 @@ class FormatFirestoreDocument(beam.DoFn):
 
     def process(self, element):
 
-        #ToDo
+        doc_ref = self.db.collection(self.firestore_collection).document(element['user_id']).collection('notifications').document(element['notification_id'])
+        doc_ref.set(element)
 
         logging.info(f"Document written to Firestore: {doc_ref.id}")
 
+        yield element
 
 """ Code: Dataflow Process """
 
@@ -241,115 +254,148 @@ def run():
 
     parser.add_argument(
                 '--project_id',
-                required=True,
+                required=False,
+                default="inspiring-bonus-481514-j4",
                 help='GCP cloud project name.')
     
     parser.add_argument(
                 '--playback_pubsub_subscription_name',
-                required=True,
+                required=False,
+                default="playback_topic_sub",
                 help='Pub/Sub subscription for playback events.')
     
     parser.add_argument(
                 '--engagement_pubsub_subscription_name',
-                required=True,
+                required=False,
+                default="engagement_topic_sub",
                 help='Pub/Sub subscription for engagement events.')
     
     parser.add_argument(
                 '--quality_pubsub_subscription_name',
-                required=True,
+                required=False,
+                default="quality_topic_sub",
                 help='Pub/Sub subscription for quality events.')
 
     parser.add_argument(
                 '--notifications_pubsub_topic_name',
-                required=True,
+                required=False,
+                default="user_notifications_sub",
                 help='Pub/Sub topic for push notifications.')
     
     parser.add_argument(
                 '--firestore_collection',
-                required=True,
+                required=False,
+                default="usuarios",
                 help='Firestore collection name.')
     
     parser.add_argument(
                 '--bigquery_dataset',
-                required=True,
+                required=False,
+                default="edem_data",
                 help='BigQuery dataset name.')
     
     parser.add_argument(
                 '--user_bigquery_table',
-                required=True,
+                required=False,
+                default="usuariosbq",
                 help='User BigQuery table name.')
     
     parser.add_argument(
                 '--episode_bigquery_table',
-                required=True,
+                required=False,
+                default="episodes",
                 help='Episode BigQuery table name.')
     
     args, pipeline_opts = parser.parse_known_args()
 
     # Pipeline Options
     options = PipelineOptions(pipeline_opts,
-        save_main_session=True, streaming=True, project=args.project_id)
+        streaming=True, project=args.project_id)
+    
+    setup = options.view_as(SetupOptions)
+    setup.save_main_session = True
     
     # Pipeline Object
     with beam.Pipeline(argv=pipeline_opts,options=options) as p:
 
         playback_event = (
             p 
-                | "ReadFromPlayBackPubSub" >> #ToDo
-                | "ParsePlaybackMessages" >> #ToDo
-                | "NormalizePlaybackEvents" >> #ToDo
+                | "ReadFromPlayBackPubSub" >> beam.io.ReadFromPubSub(
+                    subscription=f"projects/{args.project_id}/subscriptions/{args.playback_pubsub_subscription_name}")
+                | "ParsePlaybackMessages" >> beam.Map(parsePubSubMessage)
+                | "NormalizePlaybackEvents" >> beam.Map(normalizePlaybackEvent)
         )
 
         engagement_event = (
             p
-                | "ReadFromEngagementPubSub" >> #ToDo
-                | "ParseEngagementMessages" >> #ToDo
-                | "NormalizeEngagementEvents" >> #ToDo
+                | "ReadFromEngagementPubSub" >> beam.io.ReadFromPubSub(
+                    subscription=f"projects/{args.project_id}/subscriptions/{args.engagement_pubsub_subscription_name}")
+                | "ParseEngagementMessages" >> beam.Map(parsePubSubMessage)
+                | "NormalizeEngagementEvents" >> beam.Map(normalizeEngagementEvent)
         )
 
         quality_event = (
             p
-                | "ReadFromQualityPubSub" >> #ToDo
-                | "ParseQualityMessages" >> #ToDo
-                | "NormalizeQualityEvents" >> #ToDo
+                | "ReadFromQualityPubSub" >> beam.io.ReadFromPubSub(
+                    subscription=f"projects/{args.project_id}/subscriptions/{args.quality_pubsub_subscription_name}")
+                | "ParseQualityMessages" >> beam.Map(parsePubSubMessage)
+                | "NormalizeQualityEvents" >> beam.Map(normalizeQualityEvent)
         )
 
-        all_events = #ToDo
+        all_events = (playback_event, engagement_event, quality_event) | "MergeEvents" >> beam.Flatten()
 
         # A. User real-time metrics (Session-based)
         user_data = (
             all_events
-                | "WindowIntoSessions" >> #ToDo
-                | "KeyByUserId" >> #ToDo
-                | "GroupByUserId" >> #ToDo
-                | "ComputeUserMetrics" >> #ToDo
+                | "WindowIntoSessions" >> beam.WindowInto(Sessions(gap_size=30))
+                | "KeyByUserId" >> beam.Map(lambda x: (x["user_id"], x))
+                | "GroupByUserId" >> beam.GroupByKey()
+                | "ComputeUserMetrics" >> beam.ParDo(UserMetricsFn()).with_outputs(UserMetricsFn.METRICS, UserMetricsFn.NOTIFY)
         )
 
         (
             user_data.metrics
-                | "WriteUserMetricsToBigQuery" >> #ToDo
+                | "WriteUserMetricsToBigQuery" >> beam.io.WriteToBigQuery(
+                        project=args.project_id,
+                        dataset=args.bigquery_dataset,
+                        table=args.user_bigquery_table,
+                        schema='user_id:STRING, window_start:TIMESTAMP, window_end:TIMESTAMP, plays:INTEGER, completes:INTEGER, score:FLOAT',
+                        write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                        create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
+                    )
         )
 
         (
             user_data.notify
-                | "WriteToFirestore" >> #ToDo
+                | "WriteToFirestore" >> beam.ParDo(FormatFirestoreDocument(firestore_collection=args.firestore_collection, project_id=args.project_id))
         )
 
         (
             user_data.notify
-                | "EncodeUserNotifications" >> #ToDo
-                | "WriteUserNotificationsToPubSub" >> #ToDo
+                | "EncodeUserNotifications" >> beam.Map(lambda x: json.dumps(x).encode('utf-8'))
+                | "WriteUserNotificationsToPubSub" >> beam.io.WriteToPubSub(
+                    topic=f"projects/{args.project_id}/topics/{args.notifications_pubsub_topic_name}"
+                )
         )
 
         # B. Content real-time metrics (Sliding window-based)
-
         content_data = (
             all_events
-                | "WindowIntoSliding" >> #ToDo
-                | "KeyByEpisodeId" >> #ToDo
-                | "GroupByEpisodeId" >> #ToDo
-                | "ComputeContentMetrics" >> #ToDo
-                | "WriteToBigQuery" >> #ToDo
+                | "WindowIntoSliding" >> beam.WindowInto(SlidingWindows(size=60, period=10))
+                | "KeyByEpisodeId" >> beam.Map(lambda x: (x["episode_id"], x))
+                | "GroupByEpisodeId" >> beam.GroupByKey()
+                | "ComputeContentMetrics" >> beam.ParDo(ContentMetricsFn()).with_outputs(ContentMetricsFn.METRICS, ContentMetricsFn.NOTIFY)
+        )
+          
+        (content_data.metrics 
+                | "WriteToBigQuery" >> beam.io.WriteToBigQuery(
+                        project=args.project_id,
+                        dataset=args.bigquery_dataset,
+                        table=args.episode_bigquery_table,
+                        schema='episode_id:STRING, window_start:TIMESTAMP, window_end:TIMESTAMP, plays:INTEGER, completes:INTEGER, score:FLOAT',
+                        write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+                        create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
+                    )
         )
 
 if __name__ == '__main__':

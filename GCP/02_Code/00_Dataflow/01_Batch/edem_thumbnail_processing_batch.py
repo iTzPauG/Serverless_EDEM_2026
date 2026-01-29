@@ -88,23 +88,21 @@ class FormatFirestoreDocument(beam.DoFn):
         from google.cloud import firestore
         self.db = firestore.Client(project=self.project_id)
 
-
     def process(self, element):
+
         doc_ref = self.db.collection(self.firestore_collection).document(element['episode_id'])
-        # Only update the 'path' and 'is_sensitive' fields
-        update_fields = {k: v for k, v in element.items() if k in ('path', 'is_sensitive')}
-        doc_ref.update(update_fields)
+        doc_ref.update({
+            "image_url": element['image_url'],
+            "is_sensitive": element['is_sensitive']
+        })
 
         logging.info(f"Document written to Firestore: {doc_ref.id}")
 
 class GetMetadataFromFileDoFn(beam.DoFn):
 
-    def __init__(self,project_id):
-        self.project_id = project_id
-
     def setup(self):
         from google.cloud import storage
-        self.client = storage.Client(project=self.project_id)
+        self.client = storage.Client()
 
     def process(self, element):
         from urllib.parse import urlparse
@@ -116,9 +114,9 @@ class GetMetadataFromFileDoFn(beam.DoFn):
         blob = self.client.bucket(bucket).get_blob(blob_name)
 
         yield {
+            "episode_id": blob.metadata.get("episode_id"),
             "is_sensitive": element['is_sensitive'],
-            "path": element['path'],
-            "episode_id": blob.metadata.get("episode_id")
+            "image_url": element['path'],
         }
 
 """ Code: Dataflow Process """
@@ -174,25 +172,23 @@ def run():
             image_files
                 | "ReadImageFiles" >> beam.Map(read_image_bytes)
                 | "SafeSearchDetection" >> beam.ParDo(VisionSafeSearchDoFn())
-                | "GetMetadataFromFile" >> beam.ParDo(GetMetadataFromFileDoFn(args.project_id))
+                | "GetMetadataFromFile" >> beam.ParDo(GetMetadataFromFileDoFn())
         )
 
-        processed_image_data | "WriteToFirestore" >> beam.ParDo(FormatFirestoreDocument(args.firestore_collection, args.project_id))
+        processed_image_data | "WriteToFirestore" >> beam.ParDo(
+            FormatFirestoreDocument(
+                firestore_collection=args.firestore_collection,project_id=args.project_id)
+        )
         
         (
             processed_image_data |
             "WriteToBigQuery" >> beam.io.WriteToBigQuery(
                 table=f"{args.project_id}:{args.bigquery_dataset}.{args.bigquery_table}",
-                schema={
-                    "fields": [
-                        {"name": "episode_id", "type": "STRING", "mode": "REQUIRED"},
-                        {"name": "path", "type": "STRING", "mode": "NULLABLE"},
-                        {"name": "is_sensitive", "type": "STRING", "mode": "NULLABLE"},
-                    ]
-                },
+                schema = "episode_id:STRING, is_sensitive:BOOLEAN, image_url:STRING",
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
                 create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-                method=beam.io.WriteToBigQuery.Method.FILE_LOADS
+                method=beam.io.WriteToBigQuery.Method.FILE_LOADS,
+                custom_gcs_temp_location = f'gs://{args.bucket_name}/temp/'
             )
         )
 
